@@ -35,7 +35,7 @@ class _PostJobScreenState extends State<PostJobScreen> {
         children: [
           const SectionTitle(
             title: "Create a job",
-            subtitle: "UI demo form — backend later",
+            // subtitle: "UI demo form — backend later",
           ),
           const SizedBox(height: 12),
 

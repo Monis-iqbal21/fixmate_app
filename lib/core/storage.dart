@@ -19,9 +19,10 @@ class AppStorage {
 
   /// Save role (client / worker / admin)
   static Future<void> saveRole(String role) async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString(_kRole, role);
-  }
+  final sp = await SharedPreferences.getInstance();
+  await sp.setString(_kRole, role.trim().toLowerCase());
+}
+
 
   static Future<String?> getRole() async {
     final sp = await SharedPreferences.getInstance();

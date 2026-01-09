@@ -7,9 +7,13 @@ import '../../core/storage.dart';
 import '../../widgets/auth_background.dart';
 import '../../widgets/app_text_field.dart';
 import '../../widgets/primary_button.dart';
-import '../shell/app_shell.dart';
+
 import 'auth_api.dart';
 import 'register_screen.dart';
+
+// ✅ Added imports for your dashboards
+import '../dashboards/client/client_dashboard.dart';
+import '../dashboards/worker/worker_dashboard.dart';
 
 class LoginScreen extends StatefulWidget {
   const LoginScreen({super.key});
@@ -31,24 +35,87 @@ class _LoginScreenState extends State<LoginScreen> {
     super.dispose();
   }
 
+  // -----------------------------
+  // Helpers: extract from API response
+  // -----------------------------
   String _token(Map<String, dynamic> data) {
-    final t = (data["token"] ?? data["access_token"] ?? "").toString();
-    if (t.isNotEmpty) return t;
+    String pick(dynamic v) => (v ?? "").toString().trim();
+
+    final t1 = pick(data["token"] ?? data["access_token"]);
+    if (t1.isNotEmpty) return t1;
+
     if (data["data"] is Map) {
-      final m = Map<String, dynamic>.from(data["data"]);
-      return (m["token"] ?? m["access_token"] ?? "").toString();
+      final d = Map<String, dynamic>.from(data["data"]);
+      final t2 = pick(d["token"] ?? d["access_token"]);
+      if (t2.isNotEmpty) return t2;
     }
+
+    return "";
+  }
+
+  String _role(Map<String, dynamic> data) {
+    String pick(dynamic v) => (v ?? "").toString().trim().toLowerCase();
+
+    // direct role
+    final r1 = pick(data["role"]);
+    if (r1.isNotEmpty) return r1;
+
+    // inside user
+    if (data["user"] is Map) {
+      final u = Map<String, dynamic>.from(data["user"]);
+      final r2 = pick(u["role"]);
+      if (r2.isNotEmpty) return r2;
+    }
+
+    // inside data / data.user
+    if (data["data"] is Map) {
+      final d = Map<String, dynamic>.from(data["data"]);
+      final r3 = pick(d["role"]);
+      if (r3.isNotEmpty) return r3;
+
+      if (d["user"] is Map) {
+        final u = Map<String, dynamic>.from(d["user"]);
+        final r4 = pick(u["role"]);
+        if (r4.isNotEmpty) return r4;
+      }
+    }
+
     return "";
   }
 
   int _userId(Map<String, dynamic> data) {
+    int parse(dynamic v) => int.tryParse((v ?? "0").toString()) ?? 0;
+
     if (data["user"] is Map) {
       final u = Map<String, dynamic>.from(data["user"]);
-      return int.tryParse((u["id"] ?? "0").toString()) ?? 0;
+      final id = parse(u["id"]);
+      if (id > 0) return id;
     }
+
+    if (data["data"] is Map) {
+      final d = Map<String, dynamic>.from(data["data"]);
+      if (d["user"] is Map) {
+        final u = Map<String, dynamic>.from(d["user"]);
+        final id = parse(u["id"]);
+        if (id > 0) return id;
+      }
+    }
+
     return 0;
   }
 
+  bool _isSuccess(Map<String, dynamic> data) {
+    final s = (data["status"] ?? data["success"] ?? "")
+        .toString()
+        .toLowerCase();
+    if (s == "ok" || s == "success" || s == "true") return true;
+    if (data["success"] is bool) return data["success"] == true;
+    return false;
+  }
+
+  // -----------------------------
+  // Login
+  // -----------------------------
   Future<void> _handleLogin() async {
     FocusScope.of(context).unfocus();
     if (!_formKey.currentState!.validate()) return;
@@ -56,17 +123,26 @@ class _LoginScreenState extends State<LoginScreen> {
     setState(() => _loading = true);
 
     try {
-      final data = await AuthApi.login(email: _email.text, password: _pass.text);
-      final status = (data["status"] ?? "").toString().toLowerCase();
+      final data = await AuthApi.login(
+        email: _email.text,
+        password: _pass.text,
+      );
+      debugPrint("LOGIN RESPONSE: $data");
 
-      if (status != "ok" && status != "success") {
-        final msg = (data["msg"] ?? data["message"] ?? "Login failed").toString();
+      if (!_isSuccess(data)) {
+        final msg = (data["msg"] ?? data["message"] ?? "Login failed")
+            .toString();
         if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(msg)));
         return;
       }
 
       final token = _token(data);
+      final role = _role(data);
+      final uid = _userId(data);
+
       if (token.isEmpty) {
         if (!mounted) return;
         ScaffoldMessenger.of(context).showSnackBar(
@@ -75,24 +151,57 @@ class _LoginScreenState extends State<LoginScreen> {
         return;
       }
 
-      await AppStorage.saveToken(token);
+      if (role.isEmpty) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text("Role not received from API")),
+        );
+        return;
+      }
 
-      final uid = _userId(data);
+      // ✅ Save everything
+      await AppStorage.saveToken(token);
+      await AppStorage.saveRole(role);
+      debugPrint("TOKEN SAVED: $token");
+      final saved = await AppStorage.getToken();
+      debugPrint("TOKEN READ BACK: $saved");
+
       if (uid > 0) await AppStorage.saveUserId(uid);
 
+      // ✅ Proof (keep while testing)
+      final savedRole = await AppStorage.getRole();
+      debugPrint("ROLE SAVED IN STORAGE: $savedRole");
+
       if (!mounted) return;
-      Navigator.of(context).pushAndRemoveUntil(
-        MaterialPageRoute(builder: (_) => const AppShell()),
-        (_) => false,
-      );
+
+      // ✅ ROLE BASED NAVIGATION LOGIC ADDED HERE
+      if (role == 'client') {
+        Navigator.pushAndRemoveUntil(
+          context, 
+          MaterialPageRoute(builder: (_) => const ClientDashboard()),
+          (route) => false, // Removes back stack so user can't go back to login
+        );
+      } else {
+        Navigator.pushAndRemoveUntil(
+          context, 
+          MaterialPageRoute(builder: (_) => const WorkerDashboard()),
+          (route) => false,
+        );
+      }
+
     } catch (e) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text("Error: $e")));
     } finally {
       if (mounted) setState(() => _loading = false);
     }
   }
 
+  // -----------------------------
+  // UI (same as your original)
+  // -----------------------------
   @override
   Widget build(BuildContext context) {
     final w = MediaQuery.of(context).size.width;
@@ -116,12 +225,22 @@ class _LoginScreenState extends State<LoginScreen> {
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [
-                          Text("Welcome back",
-                              style: GoogleFonts.poppins(
-                                  fontSize: 20, fontWeight: FontWeight.w700, color: AppColors.textDark)),
+                          Text(
+                            "Welcome back",
+                            style: GoogleFonts.poppins(
+                              fontSize: 20,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.textDark,
+                            ),
+                          ),
                           const SizedBox(height: 6),
-                          Text("Login to continue to FixMate",
-                              style: GoogleFonts.poppins(fontSize: 13.5, color: AppColors.textLight)),
+                          Text(
+                            "Login to continue to FixMate",
+                            style: GoogleFonts.poppins(
+                              fontSize: 13.5,
+                              color: AppColors.textLight,
+                            ),
+                          ),
                           const SizedBox(height: 16),
 
                           AppTextField(
@@ -131,7 +250,8 @@ class _LoginScreenState extends State<LoginScreen> {
                             keyboardType: TextInputType.emailAddress,
                             prefixIcon: const Icon(Icons.email_outlined),
                             validator: (v) {
-                              if (v == null || !v.contains("@")) return "Valid email likho";
+                              if (v == null || !v.contains("@"))
+                                return "Valid email likho";
                               return null;
                             },
                           ),
@@ -144,11 +264,17 @@ class _LoginScreenState extends State<LoginScreen> {
                             obscureText: _obscure,
                             prefixIcon: const Icon(Icons.lock_outline),
                             suffixIcon: IconButton(
-                              onPressed: () => setState(() => _obscure = !_obscure),
-                              icon: Icon(_obscure ? Icons.visibility : Icons.visibility_off),
+                              onPressed: () =>
+                                  setState(() => _obscure = !_obscure),
+                              icon: Icon(
+                                _obscure
+                                    ? Icons.visibility
+                                    : Icons.visibility_off,
+                              ),
                             ),
                             validator: (v) {
-                              if (v == null || v.length < 6) return "Min 6 characters";
+                              if (v == null || v.length < 6)
+                                return "Min 6 characters";
                               return null;
                             },
                           ),
@@ -164,12 +290,23 @@ class _LoginScreenState extends State<LoginScreen> {
                           const SizedBox(height: 12),
                           Row(
                             children: [
-                              Expanded(child: Divider(color: Colors.black.withOpacity(0.08))),
+                              Expanded(
+                                child: Divider(
+                                  color: Colors.black.withOpacity(0.08),
+                                ),
+                              ),
                               const Padding(
                                 padding: EdgeInsets.symmetric(horizontal: 10),
-                                child: Text("or", style: TextStyle(color: AppColors.textLight)),
+                                child: Text(
+                                  "or",
+                                  style: TextStyle(color: AppColors.textLight),
+                                ),
                               ),
-                              Expanded(child: Divider(color: Colors.black.withOpacity(0.08))),
+                              Expanded(
+                                child: Divider(
+                                  color: Colors.black.withOpacity(0.08),
+                                ),
+                              ),
                             ],
                           ),
                           const SizedBox(height: 10),
@@ -177,32 +314,49 @@ class _LoginScreenState extends State<LoginScreen> {
                           OutlinedButton(
                             style: OutlinedButton.styleFrom(
                               minimumSize: const Size.fromHeight(50),
-                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+                              shape: RoundedRectangleBorder(
+                                borderRadius: BorderRadius.circular(14),
+                              ),
                               side: const BorderSide(color: AppColors.border),
                               backgroundColor: Colors.white,
                             ),
                             onPressed: () {
                               Navigator.of(context).push(
-                                MaterialPageRoute(builder: (_) => const RegisterScreen()),
+                                MaterialPageRoute(
+                                  builder: (_) => const RegisterScreen(),
+                                ),
                               );
                             },
-                            child: const Text("Create new account",
-                                style: TextStyle(fontWeight: FontWeight.w700, color: AppColors.textDark)),
+                            child: const Text(
+                              "Create new account",
+                              style: TextStyle(
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.textDark,
+                              ),
+                            ),
                           ),
 
                           const SizedBox(height: 10),
                           Text(
                             "By continuing, you agree to our Terms & Privacy.",
                             textAlign: TextAlign.center,
-                            style: GoogleFonts.poppins(fontSize: 11.5, color: AppColors.textLight),
+                            style: GoogleFonts.poppins(
+                              fontSize: 11.5,
+                              color: AppColors.textLight,
+                            ),
                           ),
                         ],
                       ),
                     ),
                   ),
                   const SizedBox(height: 14),
-                  Text("Tip: Same WiFi pe ho to API fast chalegi ✅",
-                      style: GoogleFonts.poppins(fontSize: 12, color: Colors.white60)),
+                  Text(
+                    "Tip: Same WiFi pe ho to API fast chalegi ✅",
+                    style: GoogleFonts.poppins(
+                      fontSize: 12,
+                      color: Colors.white60,
+                    ),
+                  ),
                 ],
               ),
             ),
@@ -223,15 +377,30 @@ class _BrandHeader extends StatelessWidget {
           height: 56,
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
-            gradient: const LinearGradient(colors: [AppColors.primary, AppColors.secondary]),
+            gradient: const LinearGradient(
+              colors: [AppColors.primary, AppColors.secondary],
+            ),
           ),
-          child: const Icon(Icons.handyman_rounded, color: Colors.white, size: 28),
+          child: const Icon(
+            Icons.handyman_rounded,
+            color: Colors.white,
+            size: 28,
+          ),
         ),
         const SizedBox(height: 12),
-        Text("FixMate",
-            style: GoogleFonts.poppins(fontSize: 26, fontWeight: FontWeight.w800, color: Colors.white)),
+        Text(
+          "FixMate",
+          style: GoogleFonts.poppins(
+            fontSize: 26,
+            fontWeight: FontWeight.w800,
+            color: Colors.white,
+          ),
+        ),
         const SizedBox(height: 4),
-        Text("Book trusted services in minutes", style: GoogleFonts.poppins(fontSize: 13, color: Colors.white70)),
+        Text(
+          "Book trusted services in minutes",
+          style: GoogleFonts.poppins(fontSize: 13, color: Colors.white70),
+        ),
       ],
     );
   }
